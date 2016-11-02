@@ -1,0 +1,2 @@
+web: ruby app.rb
+worker: bundle exec sidekiq -r ./app.rb -c 3

@@ -1,0 +1,23 @@
+.main {
+  margin: 0 auto;
+  width: 60%;
+  text-align: center;
+  display: block;
+}
+
+.jumbotron {
+  overflow: hidden;
+  display: block;
+}
+
+.kottan {
+  position: fixed;
+  bottom: 0;
+  right: 0;
+  overflow: hidden;
+  display: block;
+}
+
+.kottan img {
+  width: 230px;
+}
