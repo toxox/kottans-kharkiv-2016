@@ -9,8 +9,19 @@ require "redis"
 require "sidekiq/api"
 require "sanitize"
 
-
 $redis = Redis.new(url: (ENV['REDISTOGO_URL'] || 'redis://127.0.0.1:6379'))
+
+class Message < ActiveRecord::Base
+  validates :body, length: { minimum: 2 }
+
+  def self.random_name
+    [*('a'..'z'),*('0'..'9')].shuffle[0,14].join
+  end
+
+  def decrease_views
+    self.views_left -= 1
+  end
+end
 
 class MessageWorker
   include Sidekiq::Worker
@@ -20,8 +31,45 @@ class MessageWorker
   end
 end
 
-class Message < ActiveRecord::Base
-  validates :body, length: { minimum: 2 }
+class MessageSecureService
+  def initialize text
+    @text = text
+  end
+
+  def encrypt(password)
+    AESCrypt.encrypt(Sanitize.fragment(@text), password) if @text.length != 0
+  end
+
+  def decrypt(password)
+    AESCrypt.decrypt(@text, password)
+  end
+end
+
+class MessageDestroy
+  def initialize(message, destroy_type, destroy_value)
+    @message = message
+    @destroy_type = destroy_type
+    @destroy_value = destroy_value
+  end
+
+  def destroy_settings
+    if @destroy_type == 'views'
+      destroy_views
+    elsif @destroy_type == 'hours'
+      destroy_hours
+    end
+  end
+
+  def destroy_views
+    @message.should_destroy_after_view = true
+    @message.views_left = @destroy_value.to_i
+    @message
+  end
+
+  def destroy_hours
+    MessageWorker.perform_at(@destroy_value.to_i.hours.from_now, @message.name)
+    @message
+  end
 end
 
 get '/' do
@@ -35,16 +83,11 @@ end
 
 post "/messages" do
   @message = Message.new(params[:message])
-  @message.name = [*('a'..'z'),*('0'..'9')].shuffle[0,14].join
-  @message.body = AESCrypt.encrypt(Sanitize.fragment(@message.body), params[:password]) if @message.body.length != 0
+  @message.name = Message.random_name
+  @message.body = MessageSecureService.new(@message.body).encrypt(params[:password])
 
-  if params[:destroy_type] == 'views'
-    @message.should_destroy_after_view = true
-    @message.views_left = params[:destroy_value].to_i
-  elsif params[:destroy_type] == 'hours'
-    destroy_value = params[:destroy_value].to_i
-    MessageWorker.perform_at(destroy_value.hours.from_now, @message.name)
-  end
+  msg = MessageDestroy.new(@message, params[:destroy_type], params[:destroy_value])
+  @message = msg.destroy_settings
 
   if @message.save
     erb :"/messages/link", locals: {link: "#{request.url}/#{@message.name}"}
@@ -63,14 +106,13 @@ get '/messages/:name' do
 end
 
 post '/messages/:name' do
-  puts params
   @message = Message.find_by(name: params[:name])
 
   begin
-    @decrypted_message = AESCrypt.decrypt(@message.body, params[:password])
+    @decrypted_message = MessageSecureService.new(@message.body).decrypt(params[:password])
 
     if @message.should_destroy_after_view
-      @message.views_left -= 1
+      @message.decrease_views
       @message.save
     end
     erb :"messages/decrypted", locals: {message: @decrypted_message}
